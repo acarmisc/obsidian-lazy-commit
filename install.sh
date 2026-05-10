@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+if ! command -v afm-cli &>/dev/null; then
+  echo "[install] Installing afm-cli..."
+  brew tap CreevekCZ/tap
+  brew install afm-cli
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLIST_SRC="$SCRIPT_DIR/com.user.obsidian-lazy-commit.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist"
