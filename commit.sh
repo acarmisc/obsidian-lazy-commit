@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+: "${REPO_DIR:=$(cd "$(dirname "$0")" && pwd)}"
+: "${VAULT_DIR:=$REPO_DIR}"
 
 log() {
   local timestamp
@@ -14,8 +15,8 @@ if [ -f "$CONFIG_FILE" ]; then
   source "$CONFIG_FILE"
 fi
 
-VAULT_DIR="${VAULT_DIR:-$REPO_DIR}"
-cd "$REPO_DIR"
+: "${VAULT_DIR:=$REPO_DIR}"
+cd "$VAULT_DIR"
 
 log "Started"
 

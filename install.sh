@@ -16,17 +16,28 @@ CONFIG_FILE="$CONFIG_DIR/config"
 mkdir -p "$CONFIG_DIR"
 
 if [ ! -f "$CONFIG_FILE" ]; then
+  read -p "Enter the path to your Obsidian vault (default: $SCRIPT_DIR): " VAULT_DIR_INPUT
+  VAULT_DIR_INPUT="${VAULT_DIR_INPUT:-$SCRIPT_DIR}"
+  REPO_DIR_ABS="$(cd "$VAULT_DIR_INPUT" && pwd)"
+  
   cat > "$CONFIG_FILE" <<EOF
-# Path to the git repo to commit into
-REPO_DIR=$SCRIPT_DIR
-# Optional: path to watch for changes (defaults to REPO_DIR)
-# VAULT_DIR=/path/to/obsidian/vault
+# Path to the git repo / Obsidian vault to commit
+VAULT_DIR=$REPO_DIR_ABS
+# Optional: path to the git remote to push to (defaults to VAULT_DIR)
+# REPO_DIR=/path/to/git/repo
 EOF
-  echo "[install] Created default config at $CONFIG_FILE"
+  echo "[install] Created config at $CONFIG_FILE with VAULT_DIR=$REPO_DIR_ABS"
+else
+  read -p "Enter the path to your Obsidian vault (current: $(source "$CONFIG_FILE" && echo "${VAULT_DIR:-$REPO_DIR}")): " VAULT_DIR_INPUT
+  VAULT_DIR_INPUT="${VAULT_DIR_INPUT:-$(source "$CONFIG_FILE" && echo "${VAULT_DIR:-$REPO_DIR}")}"
+  REPO_DIR_ABS="$(cd "$VAULT_DIR_INPUT" && pwd)"
+  sed -i.bak "s|^VAULT_DIR=.*|VAULT_DIR=$REPO_DIR_ABS|g" "$CONFIG_FILE"
+  echo "[install] Updated config at $CONFIG_FILE with VAULT_DIR=$REPO_DIR_ABS"
 fi
 
 cp "$PLIST_SRC" "$PLIST_DST"
-echo "[install] Installed plist to $PLIST_DST"
+sed -i.bak "s|<string>/Users/andrea/Projects/personal/obsidian-lazy-commit</string>|<string>$REPO_DIR_ABS</string>|g" "$PLIST_DST"
+echo "[install] Installed plist to $PLIST_DST with REPO_DIR=$REPO_DIR_ABS"
 
 launchctl load "$PLIST_DST" 2>/dev/null || launchctl bootstrap gui/$(id -u) "$PLIST_DST"
 echo "[install] Loaded launchd job: com.user.obsidian-lazy-commit"

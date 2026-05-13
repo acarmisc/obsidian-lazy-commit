@@ -9,6 +9,8 @@
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>REPO_DIR</key>
+        <string>/Users/andrea/Documents/acarmisc/</string>
     </dict>
     <key>ProgramArguments</key>
     <array>
