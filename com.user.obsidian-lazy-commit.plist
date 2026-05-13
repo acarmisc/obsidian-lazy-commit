@@ -5,6 +5,11 @@
 <dict>
     <key>Label</key>
     <string>com.user.obsidian-lazy-commit</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
     <key>ProgramArguments</key>
     <array>
         <string>/Users/andrea/Projects/personal/obsidian-lazy-commit/commit.sh</string>
