@@ -26,7 +26,15 @@ cd "$VAULT_DIR"
 
 log "Started"
 
-CHANGES=$(git status --porcelain 2>/dev/null)
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  log "ERROR: '$VAULT_DIR' is not a git working tree. Run install.sh or 'git init' here."
+  exit 1
+fi
+
+if ! CHANGES=$(git status --porcelain 2>/dev/null); then
+  log "ERROR: 'git status' failed in '$VAULT_DIR'."
+  exit 1
+fi
 if [ -z "$CHANGES" ]; then
   log "No changes, skipping."
   exit 0
@@ -51,10 +59,12 @@ else
   exit 1
 fi
 
-if git push 2>&1 | tee -a /tmp/obsidian-lazy-commit.log; then
+PUSH_OUTPUT=$(git push 2>&1) || PUSH_RC=$?
+echo "$PUSH_OUTPUT" >> /tmp/obsidian-lazy-commit.log
+if [ "${PUSH_RC:-0}" -eq 0 ]; then
   log "Pushed successfully"
 else
-  log "WARNING: Push failed (remote not configured?)"
+  log "WARNING: Push failed (rc=${PUSH_RC}). Check remote/auth in the log above."
 fi
 
 log "Completed"

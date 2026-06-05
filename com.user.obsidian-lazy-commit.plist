@@ -10,11 +10,11 @@
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>REPO_DIR</key>
-        <string>/Users/andrea/Documents/acarmisc/</string>
+        <string>__REPO_DIR__</string>
     </dict>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/andrea/Projects/personal/obsidian-lazy-commit/commit.sh</string>
+        <string>__COMMIT_SCRIPT__</string>
     </array>
     <key>StartInterval</key>
     <integer>3600</integer>
