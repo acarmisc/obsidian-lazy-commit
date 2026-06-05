@@ -21,10 +21,8 @@ if [ ! -f "$CONFIG_FILE" ]; then
   REPO_DIR_ABS="$(cd "$VAULT_DIR_INPUT" && pwd)"
   
   cat > "$CONFIG_FILE" <<EOF
-# Path to the git repo / Obsidian vault to commit
+# Path to the Obsidian vault (or any folder) to watch and commit
 VAULT_DIR=$REPO_DIR_ABS
-# Optional: path to the git remote to push to (defaults to VAULT_DIR)
-# REPO_DIR=/path/to/git/repo
 EOF
   echo "[install] Created config at $CONFIG_FILE with VAULT_DIR=$REPO_DIR_ABS"
 else
@@ -36,7 +34,7 @@ else
 fi
 
 cp "$PLIST_SRC" "$PLIST_DST"
-sed -i.bak "s|<string>/Users/andrea/Projects/personal/obsidian-lazy-commit</string>|<string>$REPO_DIR_ABS</string>|g" "$PLIST_DST"
+sed -i.bak "s|<string>/Users/andrea/Documents/acarmisc/</string>|<string>$REPO_DIR_ABS</string>|g" "$PLIST_DST"
 echo "[install] Installed plist to $PLIST_DST with REPO_DIR=$REPO_DIR_ABS"
 
 launchctl load "$PLIST_DST" 2>/dev/null || launchctl bootstrap gui/$(id -u) "$PLIST_DST"

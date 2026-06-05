@@ -16,6 +16,12 @@ if [ -f "$CONFIG_FILE" ]; then
 fi
 
 : "${VAULT_DIR:=$REPO_DIR}"
+
+if [ ! -d "$VAULT_DIR" ]; then
+  log "ERROR: VAULT_DIR '$VAULT_DIR' does not exist. Check config."
+  exit 1
+fi
+
 cd "$VAULT_DIR"
 
 log "Started"
@@ -28,7 +34,8 @@ fi
 
 git add -A
 
-DIFF=$(git diff --cached | head -c 2000)
+DIFF=$(git diff --cached)
+DIFF="${DIFF:0:2000}"
 if [ -z "$DIFF" ]; then
   log "Nothing staged after add, skipping."
   exit 0
