@@ -49,7 +49,7 @@ if [ -z "$DIFF" ]; then
   exit 0
 fi
 
-MSG=$(afm-cli -s "Generate a concise one-line git commit message (max 72 chars, no quotes). Summarize the diff." -p "$DIFF" 2>/dev/null || echo "auto-sync: $(date +%Y-%m-%d_%H:%M)")
+MSG=$(afm-cli -s "Generate a concise two-line git commit message (max 250 chars, no quotes). Summarize the diff giving a brief summary of the changes." -p "$DIFF" 2>/dev/null || echo "auto-sync: $(date +%Y-%m-%d_%H:%M)")
 MSG=$(echo "$MSG" | head -1 | cut -c1-72)
 
 if git commit -m "$MSG"; then
