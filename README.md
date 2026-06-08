@@ -191,9 +191,11 @@ For event-driven triggers instead of an interval (e.g. on file system changes), 
 |---|---|---|
 | `afm-cli not found` during install | Homebrew not installed | Install [Homebrew](https://brew.sh) first, re-run `./install.sh`. |
 | Commit message is always `auto-sync: YYYY-MM-DD_HH:MM` | `afm-cli` failing (Apple Intelligence off, Intel Mac, wrong macOS) | Enable Apple Intelligence in System Settings, or update to macOS 26+ on Apple Silicon. |
-| `ERROR: '...' is not a git working tree` in logs | `path` for a vault points at a non-git folder | Re-run `./install.sh` (it will `git init`), or `cd <path> && git init` manually. |
-| `WARNING: existing origin 'X' differs from configured 'Y'` | You changed the TOML but the existing repo's `origin` was never updated | Run `cd <vault-path> && git remote set-url origin <new-url>`, or revert the TOML. |
-| `WARNING: Push failed` in logs | No remote, or SSH key not registered with GitHub | `cd <vault-path> && git remote -v` — add with `git remote add origin <url>` and verify `ssh -T git@github.com`. |
+| `ERROR: vault path 'X' does not exist. Skipping.` in logs | A vault's `path` in the TOML points at a missing folder | Fix the path, or re-run `./install.sh` to recreate the dir (it will ask before creating). |
+| `No git repo found. Running: git init` in logs | The vault's `path` was not a git repo on this tick | Normal on first run after install, or for any path that was never initialized. `commit.sh` inits it automatically; no action needed. |
+| `WARNING: existing origin 'X' differs from configured 'Y'` | You changed the TOML but the existing repo's `origin` was never updated | Run `cd <vault-path> && git remote set-url origin <new-url>`, or revert the TOML. The local commit still happens. |
+| Local commit landed but `Push skipped (no remote configured or origin mismatch)` | Empty `remote` in the TOML, or origin mismatch (see above) | Set `remote` in the TOML, or fix the existing `origin`. |
+| `WARNING: Push failed` in logs | Push itself failed (no network, auth, non-fast-forward, etc.) | `cd <vault-path> && git fetch` to diagnose; check `ssh -T git@github.com` for SSH-key issues; the local commit is already on `main`. |
 | `plutil -lint` fails in install output | Old `~/Library/LaunchAgents/...plist` with broken edits | Delete it: `rm ~/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist` and re-run `./install.sh`. |
 | Job runs but logs are silent | launchd can't find `commit.sh` (path moved) | Re-run `./install.sh` to refresh the `__COMMIT_SCRIPT__` sentinel in the plist. |
 | `python3 < 3.11 (no tomllib)` error | macOS older than 26 (or Homebrew Python not on PATH) | macOS 26 ships Python 3.11+; otherwise `brew install python`. |
