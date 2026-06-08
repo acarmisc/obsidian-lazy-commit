@@ -9,15 +9,13 @@
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-        <key>REPO_DIR</key>
-        <string>__REPO_DIR__</string>
     </dict>
     <key>ProgramArguments</key>
     <array>
         <string>__COMMIT_SCRIPT__</string>
     </array>
     <key>StartInterval</key>
-    <integer>3600</integer>
+    <integer>__SCHEDULE__</integer>
     <key>StandardOutPath</key>
     <string>/tmp/obsidian-lazy-commit.log</string>
     <key>StandardErrorPath</key>
