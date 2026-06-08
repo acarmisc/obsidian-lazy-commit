@@ -1,0 +1,337 @@
+#!/bin/bash
+# obsidian-lazy-commit-setup
+#
+# Interactive first-time setup. Writes ~/.config/obsidian-lazy-commit/config.toml
+# with the user's vault list and schedule, and either:
+#   - loads the launchd plist directly (git-clone install), or
+#   - tells the user to run `brew services start obsidian-lazy-commit`
+#     (Homebrew install).
+#
+# Re-runs are safe: existing configs are detected and the user is asked
+# whether to keep the existing vault list.
+
+set -euo pipefail
+
+SCHEDULE_DEFAULT=3600
+SENTINEL_SCHEDULE="$SCHEDULE_DEFAULT"
+DEFAULT_REPO_URL="git@github.com:acarmisc/-obsidian-lazy-commit.git"
+REPO_DIR_DEFAULT="$HOME/.local/share/obsidian-lazy-commit"
+
+# Detect Homebrew install. The formula sets HOMEBREW_PREFIX in the wrapper
+# script's environment. We also probe the well-known Homebrew bin path.
+BREW_INSTALL=0
+if [ -n "${HOMEBREW_PREFIX:-}" ] && [ "${0}" != "${0#/usr/local/bin}" ] && [ "${0}" != "${0#/opt/homebrew/bin}" ]; then
+  BREW_INSTALL=1
+fi
+# More reliable detection: if our own path is inside a Homebrew prefix.
+case "$0" in
+  /opt/homebrew/bin/*|/usr/local/bin/*)
+    BREW_INSTALL=1
+    ;;
+esac
+
+log() { echo "[setup] $1"; }
+err() { echo "[setup] ERROR: $1" >&2; }
+
+# --- Prereqs -------------------------------------------------------------------
+if ! command -v git &>/dev/null; then
+  err "git is required but not found in PATH."
+  exit 1
+fi
+if ! command -v python3 &>/dev/null; then
+  err "python3 is required to parse the TOML config."
+  exit 1
+fi
+if [ "$BREW_INSTALL" -eq 0 ] && ! command -v afm-cli &>/dev/null; then
+  log "afm-cli not found, installing via Homebrew..."
+  if ! command -v brew &>/dev/null; then
+    err "Homebrew is required to install afm-cli (or install it manually)."
+    err "Install Homebrew first: https://brew.sh"
+    exit 1
+  fi
+  brew tap CreevekCZ/tap
+  brew install afm-cli
+fi
+
+# When installed via Homebrew, afm-cli is already a formula dependency, so
+# the missing-binary check above doesn't apply — the user has either installed
+# it alongside obsidian-lazy-commit or it is already on PATH. Still warn.
+if [ "$BREW_INSTALL" -eq 1 ] && ! command -v afm-cli &>/dev/null; then
+  err "afm-cli is not on PATH. Install it with: brew install creevekcz/tap/afm-cli"
+  exit 1
+fi
+
+# --- Locations -----------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# The commit script lives next to this file in a git-clone install, or in
+# HOMEBREW_PREFIX/share/obsidian-lazy-commit/ in a brew install.
+if [ "$BREW_INSTALL" -eq 1 ]; then
+  COMMIT_SCRIPT="${HOMEBREW_PREFIX:-/opt/homebrew}/share/obsidian-lazy-commit/commit.sh"
+  PLIST_SRC="${HOMEBREW_PREFIX:-/opt/homebrew}/share/obsidian-lazy-commit/com.user.obsidian-lazy-commit.plist"
+  PLIST_DST="$HOME/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist"
+else
+  COMMIT_SCRIPT="$SCRIPT_DIR/../commit.sh"
+  if [ ! -f "$COMMIT_SCRIPT" ]; then
+    COMMIT_SCRIPT="$SCRIPT_DIR/commit.sh"
+  fi
+  PLIST_SRC="$SCRIPT_DIR/../com.user.obsidian-lazy-commit.plist"
+  if [ ! -f "$PLIST_SRC" ]; then
+    PLIST_SRC="$SCRIPT_DIR/com.user.obsidian-lazy-commit.plist"
+  fi
+  PLIST_DST="$HOME/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist"
+fi
+
+CONFIG_DIR="$HOME/.config/obsidian-lazy-commit"
+CONFIG_FILE="$CONFIG_DIR/config.toml"
+LEGACY_CONFIG_FILE="$CONFIG_DIR/config"
+
+mkdir -p "$CONFIG_DIR"
+
+# --- Migrate legacy key=value config if present --------------------------------
+if [ -f "$LEGACY_CONFIG_FILE" ] && [ ! -f "$CONFIG_FILE" ]; then
+  log "Legacy config file detected at $LEGACY_CONFIG_FILE."
+  read -r -p "[setup] Migrate it to the new TOML format? [Y/n] " MIGRATE_ANSWER
+  MIGRATE_ANSWER="${MIGRATE_ANSWER:-Y}"
+  if [[ "$MIGRATE_ANSWER" =~ ^[Yy]$ ]]; then
+    # shellcheck disable=SC1090
+    LEGACY_VAULT_DIR="$(source "$LEGACY_CONFIG_FILE" && echo "${VAULT_DIR:-}")"
+    if [ -n "$LEGACY_VAULT_DIR" ]; then
+      LEGACY_VAULT_DIR_ABS="$(cd "$LEGACY_VAULT_DIR" 2>/dev/null && pwd || echo "$LEGACY_VAULT_DIR")"
+      cat > "$CONFIG_FILE" <<EOF
+# Migrated from the legacy key=value config.
+# Edit this file to add more vaults or change remotes.
+
+[[vaults]]
+name = "default"
+path = "$LEGACY_VAULT_DIR_ABS"
+remote = "$DEFAULT_REPO_URL"
+branch = "main"
+EOF
+      mv "$LEGACY_CONFIG_FILE" "${LEGACY_CONFIG_FILE}.migrated"
+      log "Migrated to $CONFIG_FILE (legacy file kept as .migrated)."
+    else
+      log "Legacy file had no VAULT_DIR; ignoring. You will configure from scratch."
+    fi
+  else
+    log "Skipping migration. Legacy file will be ignored."
+  fi
+fi
+
+# --- Collect / refresh vault list ----------------------------------------------
+declare -a EXISTING_NAMES=()
+declare -a EXISTING_PATHS=()
+declare -a EXISTING_REMOTES=()
+declare -a EXISTING_BRANCHES=()
+
+if [ -f "$CONFIG_FILE" ]; then
+  if EXISTING=$(CONFIG_FILE_PATH="$CONFIG_FILE" python3 - <<'PY' 2>/dev/null
+import os, tomllib
+with open(os.environ["CONFIG_FILE_PATH"], "rb") as f:
+    data = tomllib.load(f)
+for v in (data.get("vaults") or []):
+    print(f"{v.get('name','')}|{v.get('path','')}|{v.get('remote','')}|{v.get('branch','main')}")
+PY
+  ); then
+    while IFS='|' read -r n p r b; do
+      EXISTING_NAMES+=("$n")
+      EXISTING_PATHS+=("$p")
+      EXISTING_REMOTES+=("$r")
+      EXISTING_BRANCHES+=("$b")
+    done <<< "$EXISTING"
+  fi
+  log "Existing config found with ${#EXISTING_NAMES[@]} vault(s)."
+  read -r -p "[setup] Keep the existing vault list? [Y/n] " KEEP_ANSWER
+  KEEP_ANSWER="${KEEP_ANSWER:-Y}"
+else
+  KEEP_ANSWER="n"
+fi
+
+declare -a VAULT_NAMES=()
+declare -a VAULT_PATHS=()
+declare -a VAULT_REMOTES=()
+declare -a VAULT_BRANCHES=()
+
+if [[ "$KEEP_ANSWER" =~ ^[Yy]$ ]] && [ "${#EXISTING_NAMES[@]}" -gt 0 ]; then
+  VAULT_NAMES=("${EXISTING_NAMES[@]}")
+  VAULT_PATHS=("${EXISTING_PATHS[@]}")
+  VAULT_REMOTES=("${EXISTING_REMOTES[@]}")
+  VAULT_BRANCHES=("${EXISTING_BRANCHES[@]}")
+else
+  echo
+  log "Add vaults. Enter an empty line at the name prompt to finish."
+  i=0
+  while :; do
+    i=$((i+1))
+    default_name="vault${i}"
+    read -r -p "[setup] Name for vault #$i (default: $default_name, empty to finish): " NAME_INPUT
+    if [ -z "$NAME_INPUT" ]; then
+      break
+    fi
+    NAME_INPUT="${NAME_INPUT:-$default_name}"
+    if ! [[ "$NAME_INPUT" =~ ^[A-Za-z0-9_-]+$ ]]; then
+      err "name must be alphanumeric, dash, or underscore. Try again."
+      i=$((i-1))
+      continue
+    fi
+    dup=0
+    for existing in "${VAULT_NAMES[@]:-}"; do
+      if [ "$existing" = "$NAME_INPUT" ]; then
+        err "name '$NAME_INPUT' already used in this session. Try again."
+        dup=1
+        break
+      fi
+    done
+    if [ "$dup" -eq 1 ]; then
+      i=$((i-1))
+      continue
+    fi
+
+    read -r -p "[setup] Path to vault '$NAME_INPUT': " PATH_INPUT
+    if [ -z "$PATH_INPUT" ]; then
+      err "path is required. Try again."
+      i=$((i-1))
+      continue
+    fi
+    if [ ! -d "$PATH_INPUT" ]; then
+      read -r -p "[setup] Path does not exist. Create '$PATH_INPUT'? [y/N] " CREATE_ANSWER
+      if [[ "$CREATE_ANSWER" =~ ^[Yy]$ ]]; then
+        mkdir -p "$PATH_INPUT"
+        log "Created $PATH_INPUT"
+      else
+        log "Skipped. Re-enter this vault or pick a different path."
+        i=$((i-1))
+        continue
+      fi
+    fi
+    PATH_ABS="$(cd "$PATH_INPUT" && pwd)"
+
+    read -r -p "[setup] Git remote URL for '$NAME_INPUT' (default: $DEFAULT_REPO_URL, empty = none): " REMOTE_INPUT
+    if [ -z "$REMOTE_INPUT" ]; then
+      REMOTE_INPUT="$DEFAULT_REPO_URL"
+    fi
+    read -r -p "[setup] Override remote to empty? [y/N] " CLEAR_REMOTE
+    if [[ "$CLEAR_REMOTE" =~ ^[Yy]$ ]]; then
+      REMOTE_INPUT=""
+    fi
+
+    read -r -p "[setup] Default branch (default: main): " BRANCH_INPUT
+    BRANCH_INPUT="${BRANCH_INPUT:-main}"
+
+    VAULT_NAMES+=("$NAME_INPUT")
+    VAULT_PATHS+=("$PATH_ABS")
+    VAULT_REMOTES+=("$REMOTE_INPUT")
+    VAULT_BRANCHES+=("$BRANCH_INPUT")
+    log "Added vault '$NAME_INPUT' -> $PATH_ABS"
+    echo
+  done
+fi
+
+if [ "${#VAULT_NAMES[@]}" -eq 0 ]; then
+  err "at least one vault is required."
+  exit 1
+fi
+
+# Optional schedule override.
+echo
+read -r -p "[setup] Schedule in seconds (default: $SCHEDULE_DEFAULT): " SCHEDULE_INPUT
+SCHEDULE_INPUT="${SCHEDULE_INPUT:-$SCHEDULE_DEFAULT}"
+if ! [[ "$SCHEDULE_INPUT" =~ ^[0-9]+$ ]] || [ "$SCHEDULE_INPUT" -lt 60 ]; then
+  err "schedule must be an integer >= 60."
+  exit 1
+fi
+SENTINEL_SCHEDULE="$SCHEDULE_INPUT"
+
+# --- Write the TOML config -----------------------------------------------------
+{
+  echo "# Obsidian lazy commit configuration"
+  echo "# One [[vaults]] entry per folder you want auto-committed and pushed."
+  echo "# name must be unique and is used in log lines."
+  echo "# remote may be empty (commits will stay local)."
+  echo "# branch defaults to \"main\" if omitted."
+  echo "schedule_seconds = $SCHEDULE_INPUT"
+  echo
+  for i in "${!VAULT_NAMES[@]}"; do
+    n="${VAULT_NAMES[$i]}"
+    p="${VAULT_PATHS[$i]}"
+    r="${VAULT_REMOTES[$i]}"
+    b="${VAULT_BRANCHES[$i]}"
+    echo "[[vaults]]"
+    echo "name = \"$n\""
+    echo "path = \"$p\""
+    if [ -n "$r" ]; then
+      echo "remote = \"$r\""
+    fi
+    if [ -n "$b" ] && [ "$b" != "main" ]; then
+      echo "branch = \"$b\""
+    fi
+    echo
+  done
+} > "$CONFIG_FILE"
+
+log "Wrote config to $CONFIG_FILE with ${#VAULT_NAMES[@]} vault(s)."
+
+# --- Init / validate git per vault --------------------------------------------
+for i in "${!VAULT_NAMES[@]}"; do
+  n="${VAULT_NAMES[$i]}"
+  p="${VAULT_PATHS[$i]}"
+  r="${VAULT_REMOTES[$i]}"
+  b="${VAULT_BRANCHES[$i]}"
+
+  if [ ! -d "$p/.git" ]; then
+    log "[$n] No git repo in $p, initializing (branch=$b)..."
+    if ! (cd "$p" && git init -b "$b" 2>/dev/null) ; then
+      (cd "$p" && git init >/dev/null 2>&1) || true
+      (cd "$p" && git checkout -B "$b" >/dev/null 2>&1) || true
+    fi
+  fi
+  if [ -n "$r" ]; then
+    existing="$(cd "$p" && git remote get-url origin 2>/dev/null || true)"
+    if [ -z "$existing" ]; then
+      (cd "$p" && git remote add origin "$r" 2>/dev/null) || true
+      log "[$n] Added origin -> $r"
+    elif [ "$existing" != "$r" ]; then
+      log "[$n] NOTE: existing origin '$existing' differs from configured '$r'."
+      log "[$n]   commit.sh will warn and skip push until you reconcile."
+      log "[$n]   To accept the new URL: (cd '$p' && git remote set-url origin '$r')"
+    else
+      log "[$n] Origin already set to $r"
+    fi
+  fi
+done
+
+# --- Load the launchd job ------------------------------------------------------
+if [ "$BREW_INSTALL" -eq 1 ]; then
+  log "Homebrew install detected — skipping plist install."
+  log "To enable the launchd job, run:"
+  log "  brew services start obsidian-lazy-commit"
+  log "To stop it:"
+  log "  brew services stop obsidian-lazy-commit"
+  log "To see status:"
+  log "  brew services info obsidian-lazy-commit"
+  exit 0
+fi
+
+# Git-clone install: do the plist install manually.
+mkdir -p "$(dirname "$PLIST_DST")"
+cp "$PLIST_SRC" "$PLIST_DST"
+sed -i.bak \
+  -e "s|__COMMIT_SCRIPT__|$COMMIT_SCRIPT|g" \
+  -e "s|__SCHEDULE__|$SENTINEL_SCHEDULE|g" \
+  "$PLIST_DST"
+rm -f "$PLIST_DST.bak"
+
+if ! plutil -lint "$PLIST_DST" >/dev/null 2>&1; then
+  err "generated plist failed plutil -lint. Aborting."
+  exit 1
+fi
+log "Installed plist to $PLIST_DST (commit.sh=$COMMIT_SCRIPT, every ${SENTINEL_SCHEDULE}s)"
+
+UID_NUM="$(id -u)"
+launchctl bootout "gui/$UID_NUM" "$PLIST_DST" 2>/dev/null || true
+launchctl bootstrap "gui/$UID_NUM" "$PLIST_DST"
+launchctl enable "gui/$UID_NUM/com.user.obsidian-lazy-commit" 2>/dev/null || true
+launchctl kickstart -k "gui/$UID_NUM/com.user.obsidian-lazy-commit" 2>/dev/null || true
+log "Loaded launchd job: com.user.obsidian-lazy-commit"
+
+log "Done. Logs: /tmp/obsidian-lazy-commit.{log,err}"

@@ -9,16 +9,18 @@
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>OBSIDIAN_LAZY_COMMIT_CONFIG_DIR</key>
+        <string>__CONFIG_DIR__</string>
     </dict>
     <key>ProgramArguments</key>
     <array>
-        <string>__COMMIT_SCRIPT__</string>
+        <string>__PROGRAM__</string>
     </array>
     <key>StartInterval</key>
     <integer>__SCHEDULE__</integer>
     <key>StandardOutPath</key>
-    <string>/tmp/obsidian-lazy-commit.log</string>
+    <string>__LOG_DIR__/obsidian-lazy-commit.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/obsidian-lazy-commit.err</string>
+    <string>__LOG_DIR__/obsidian-lazy-commit.err</string>
 </dict>
 </plist>

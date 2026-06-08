@@ -1,0 +1,19 @@
+#!/bin/bash
+# obsidian-lazy-commit
+#
+# Default entry point. If no config exists, this is a friendly pointer to
+# the setup command. If a config exists, this runs the per-tick commit
+# immediately (useful for manual kicks).
+
+set -euo pipefail
+
+CONFIG_DIR="${OBSIDIAN_LAZY_COMMIT_CONFIG_DIR:-$HOME/.config/obsidian-lazy-commit}"
+CONFIG_FILE="$CONFIG_DIR/config.toml"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "obsidian-lazy-commit: no config found at $CONFIG_FILE"
+  echo "Run 'obsidian-lazy-commit-setup' first to configure vaults and the schedule."
+  exit 1
+fi
+
+exec "$(dirname "$0")/obsidian-lazy-commit-commit"
