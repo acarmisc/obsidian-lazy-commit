@@ -1,0 +1,5 @@
+# Files to exclude from `git archive` (used for source tarball releases).
+# This keeps Formula/ in git (so the repo is self-describing for the
+# brew tap) but out of the user-facing source tarball that `brew install`
+# downloads.
+Formula/ export-ignore
