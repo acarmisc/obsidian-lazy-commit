@@ -2,7 +2,7 @@ class ObsidianLazyCommit < Formula
   desc "Scheduled auto-commit and push for one or more Obsidian vaults via launchd"
   homepage "https://github.com/acarmisc/obsidian-lazy-commit"
   url "https://github.com/acarmisc/obsidian-lazy-commit/archive/refs/tags/v1.1.0.tar.gz"
-  sha256 "5dab26731b5dbbb6b2d57604dff72c3c12f2f901b5a84fc53c2387f353a17282"
+  sha256 "af3435085afd6a484cb2bf725d8c24668aa2552cdcd76676726e8abd30fc30a4"
   version "1.1.0"
   license "MIT"
 
