@@ -109,7 +109,7 @@ cd obsidian-lazy-commit
 1. Check for `brew`, `git`, `python3`, and `afm-cli` (installs `afm-cli` via Homebrew if missing — installs `CreevekCZ/tap` first)
 2. If a **legacy** `~/.config/obsidian-lazy-commit/config` (the old `VAULT_DIR=...` file) is detected, offer to migrate it into the new TOML format
 3. If a `config.toml` already exists, offer to keep the existing vault list (and only change the mode/schedule), or start fresh
-4. Otherwise, ask for each vault's `name` (unique identifier used in log lines), `path`, `remote` URL, and `branch` — enter an empty name to finish
+4. Otherwise, ask for each vault's `path` (the vault name is derived from the folder name; an empty path finishes the list) and its `remote` URL (empty = commits stay local). The branch defaults to `main` but can be edited later in `config.toml`
 5. Ask for the trigger `mode` (`interval` or `watch`) and, for interval mode, the schedule in seconds (default `3600`, minimum `60`)
 6. Write `~/.config/obsidian-lazy-commit/config.toml` and create the file's parent directory if missing
 7. For every vault: `git init` if no `.git` exists, add the configured `origin` (or warn if the existing origin doesn't match), and offer to scaffold a recommended `.gitignore` if the vault doesn't have one (never overwrites an existing file — appends missing common patterns)

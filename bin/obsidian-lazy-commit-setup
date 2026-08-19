@@ -14,7 +14,6 @@ set -euo pipefail
 
 SCHEDULE_DEFAULT=3600
 SENTINEL_SCHEDULE="$SCHEDULE_DEFAULT"
-DEFAULT_REPO_URL="git@github.com:acarmisc/-obsidian-lazy-commit.git"
 REPO_DIR_DEFAULT="$HOME/.local/share/obsidian-lazy-commit"
 
 # Detect Homebrew install by our own location: the brew formula installs this
@@ -161,39 +160,13 @@ if [[ "$KEEP_ANSWER" =~ ^[Yy]$ ]] && [ "${#EXISTING_NAMES[@]}" -gt 0 ]; then
   VAULT_PULLS=("${EXISTING_PULLS[@]}")
 else
   echo
-  log "Add vaults. Enter an empty line at the name prompt to finish."
+  log "Add vaults. Enter an empty line at the path prompt to finish."
   i=0
   while :; do
     i=$((i+1))
-    default_name="vault${i}"
-    read -r -p "[setup] Name for vault #$i (default: $default_name, empty to finish): " NAME_INPUT
-    if [ -z "$NAME_INPUT" ]; then
-      break
-    fi
-    NAME_INPUT="${NAME_INPUT:-$default_name}"
-    if ! [[ "$NAME_INPUT" =~ ^[A-Za-z0-9_-]+$ ]]; then
-      err "name must be alphanumeric, dash, or underscore. Try again."
-      i=$((i-1))
-      continue
-    fi
-    dup=0
-    for existing in "${VAULT_NAMES[@]:-}"; do
-      if [ "$existing" = "$NAME_INPUT" ]; then
-        err "name '$NAME_INPUT' already used in this session. Try again."
-        dup=1
-        break
-      fi
-    done
-    if [ "$dup" -eq 1 ]; then
-      i=$((i-1))
-      continue
-    fi
-
-    read -r -p "[setup] Path to vault '$NAME_INPUT': " PATH_INPUT
+    read -r -p "[setup] Path to vault #$i (empty to finish): " PATH_INPUT
     if [ -z "$PATH_INPUT" ]; then
-      err "path is required. Try again."
-      i=$((i-1))
-      continue
+      break
     fi
     if [ ! -d "$PATH_INPUT" ]; then
       read -r -p "[setup] Path does not exist. Create '$PATH_INPUT'? [y/N] " CREATE_ANSWER
@@ -208,22 +181,30 @@ else
     fi
     PATH_ABS="$(cd "$PATH_INPUT" && pwd)"
 
-    read -r -p "[setup] Git remote URL for '$NAME_INPUT' (default: $DEFAULT_REPO_URL, empty = none): " REMOTE_INPUT
-    if [ -z "$REMOTE_INPUT" ]; then
-      REMOTE_INPUT="$DEFAULT_REPO_URL"
+    # Derive the vault name from the folder name (sanitized for log lines);
+    # fall back to an indexed name on empty or duplicate results.
+    default_name="$(basename "$PATH_ABS" | tr -cd 'A-Za-z0-9_-')"
+    if [ -z "$default_name" ]; then
+      default_name="vault${i}"
     fi
-    read -r -p "[setup] Override remote to empty? [y/N] " CLEAR_REMOTE
-    if [[ "$CLEAR_REMOTE" =~ ^[Yy]$ ]]; then
-      REMOTE_INPUT=""
+    NAME_INPUT="$default_name"
+    dup=0
+    for existing in "${VAULT_NAMES[@]:-}"; do
+      if [ "$existing" = "$NAME_INPUT" ]; then
+        dup=1
+        break
+      fi
+    done
+    if [ "$dup" -eq 1 ]; then
+      NAME_INPUT="vault${i}"
     fi
 
-    read -r -p "[setup] Default branch (default: main): " BRANCH_INPUT
-    BRANCH_INPUT="${BRANCH_INPUT:-main}"
+    read -r -p "[setup] Git remote URL for '$NAME_INPUT' (empty = local only): " REMOTE_INPUT
 
     VAULT_NAMES+=("$NAME_INPUT")
     VAULT_PATHS+=("$PATH_ABS")
     VAULT_REMOTES+=("$REMOTE_INPUT")
-    VAULT_BRANCHES+=("$BRANCH_INPUT")
+    VAULT_BRANCHES+=("main")
     VAULT_PULLS+=("0")
     log "Added vault '$NAME_INPUT' -> $PATH_ABS"
     echo
