@@ -107,13 +107,12 @@ cd obsidian-lazy-commit
 `install.sh` is now a thin shim around `bin/obsidian-lazy-commit-setup` — it just delegates. The actual setup script will:
 
 1. Check for `git` and `python3`, and warn (not fail) if `afm-cli` is missing — commit messages will fall back to timestamps
-2. If a **legacy** `~/.config/obsidian-lazy-commit/config` (the old `VAULT_DIR=...` file) is detected, offer to migrate it into the new TOML format
-3. If a `config.toml` already exists, offer to keep the existing vault list (and only change the mode/schedule), or start fresh
-4. Otherwise, ask for each vault's `path` (the vault name is derived from the folder name; an empty path finishes the list) and its `remote` URL (empty = commits stay local). The branch defaults to `main` but can be edited later in `config.toml`
-5. Ask for the trigger `mode` (`interval` or `watch`) and, for interval mode, the schedule in seconds (default `3600`, minimum `60`)
-6. Write `~/.config/obsidian-lazy-commit/config.toml` and create the file's parent directory if missing
-7. For every vault: `git init` if no `.git` exists, add the configured `origin` (or warn if the existing origin doesn't match), and offer to scaffold a recommended `.gitignore` if the vault doesn't have one (never overwrites an existing file — appends missing common patterns)
-8. Generate `~/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist` — `StartInterval` for `interval` mode, `WatchPaths` (one entry per vault) for `watch` mode — then `plutil -lint` it and `launchctl bootstrap` + `kickstart` the job
+2. If a `config.toml` already exists, offer to keep the existing vault list (and only change the mode/schedule), or start fresh
+3. Otherwise, ask for each vault's `path` (the vault name is derived from the folder name; an empty path finishes the list) and its `remote` URL (empty = commits stay local). The branch defaults to `main` but can be edited later in `config.toml`
+4. Ask for the trigger `mode` (`interval` or `watch`) and, for interval mode, the schedule in seconds (default `3600`, minimum `60`)
+5. Write `~/.config/obsidian-lazy-commit/config.toml` and create the file's parent directory if missing
+6. For every vault: `git init` if no `.git` exists, add the configured `origin` (or warn if the existing origin doesn't match), and offer to scaffold a recommended `.gitignore` if the vault doesn't have one (never overwrites an existing file — appends missing common patterns)
+7. Generate `~/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist` — `StartInterval` for `interval` mode, `WatchPaths` (one entry per vault) for `watch` mode — then `plutil -lint` it and `launchctl bootstrap` + `kickstart` the job
 
 ### ⚠️ macOS launchd / TCC caveat (both install methods)
 
@@ -358,4 +357,4 @@ Git-clone:
 # (or, manually: launchctl bootout ... && rm the plist)
 ```
 
-This `launchctl bootout`s the job and removes the plist. The config file at `~/.config/obsidian-lazy-commit/config.toml` and any `config.migrated` from the legacy migration are left in place (delete them manually if you want a clean uninstall). Logs in `/tmp` are also left in place.
+This `launchctl bootout`s the job and removes the plist. The config file at `~/.config/obsidian-lazy-commit/config.toml` is left in place (delete it manually if you want a clean uninstall). Logs in `/tmp` are also left in place.
