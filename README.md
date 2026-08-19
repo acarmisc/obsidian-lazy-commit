@@ -6,23 +6,25 @@ Commit messages are generated on-device by [afm-cli](https://github.com/CreevekC
 
 ## How it works
 
-A `launchd` agent runs on a timer (default: every 60 minutes). Each tick:
+A `launchd` agent runs on a timer (default: every 60 minutes, `mode = "interval"`) or fires on filesystem changes (`mode = "watch"`, debounced). Each tick:
 
 1. Parses `~/.config/obsidian-lazy-commit/config.toml` (a list of `[[vaults]]` entries)
 2. For every vault, in order:
-   1. `cd`s into the vault's `path`
+   1. `cd`s into the vault's `path`, then tests read access to catch TCC/Background-session failures up front
    2. Runs `git rev-parse` to check whether it's a git working tree
       - **Not a repo** → `git init -b <branch>` (defaults to `main`), then `git remote add origin <remote>` if one is configured
       - **Already a repo** → reads `git remote get-url origin` and compares it to the configured `remote`:
         - **Matches** → push as normal
         - **Different** → log three `WARNING` lines, **skip the push** (the local commit still happens)
         - **Empty / no origin** → add the configured `origin` and continue
-   3. Checks for uncommitted changes via `git status --porcelain`
-   4. Stages everything with `git add -A`
-   5. Pipes the staged diff (truncated to ~2KB) to the on-device Apple Intelligence model via `afm-cli`, which returns a one-line commit message
-   6. Commits and (if a trusted remote exists) pushes
+   3. If a rebase is in progress (`pull_before_push` conflict from a previous tick), skips the vault until you resolve it
+   4. Checks for uncommitted changes via `git status --porcelain`
+   5. Stages everything with `git add -A` (a properly scaffolded `.gitignore` keeps junk out)
+   6. Scans staged files for agent-provenance frontmatter (`agent:`/`model:`/`session_id:`) and appends a **git trailer** when present
+   7. Pipes the staged diff (truncated to ~2KB) to the on-device Apple Intelligence model via `afm-cli`, which returns a one-line commit message
+   8. Commits (with the trailer, if any), optionally `git pull --rebase` first (`pull_before_push = true`), and pushes if a trusted remote exists
 
-If `afm-cli` fails (e.g. Apple Intelligence not available, wrong chip, wrong macOS), the message falls back to `auto-sync: YYYY-MM-DD_HH:MM`.
+If `afm-cli` fails (e.g. Apple Intelligence not available, wrong chip, wrong macOS), the message falls back to `auto-sync: YYYY-MM-DD_HH:MM` (provenance trailer still appended).
 
 ## Requirements
 
@@ -106,13 +108,12 @@ cd obsidian-lazy-commit
 
 1. Check for `brew`, `git`, `python3`, and `afm-cli` (installs `afm-cli` via Homebrew if missing — installs `CreevekCZ/tap` first)
 2. If a **legacy** `~/.config/obsidian-lazy-commit/config` (the old `VAULT_DIR=...` file) is detected, offer to migrate it into the new TOML format
-3. If a `config.toml` already exists, offer to keep the existing vault list (and only change the schedule), or start fresh
+3. If a `config.toml` already exists, offer to keep the existing vault list (and only change the mode/schedule), or start fresh
 4. Otherwise, ask for each vault's `name` (unique identifier used in log lines), `path`, `remote` URL, and `branch` — enter an empty name to finish
-5. Ask for the schedule in seconds (default `3600`, minimum `60`)
+5. Ask for the trigger `mode` (`interval` or `watch`) and, for interval mode, the schedule in seconds (default `3600`, minimum `60`)
 6. Write `~/.config/obsidian-lazy-commit/config.toml` and create the file's parent directory if missing
-7. For every vault: `git init` if no `.git` exists, and add the configured `origin` (or warn if the existing origin doesn't match)
-8. Copy `com.user.obsidian-lazy-commit.plist` to `~/Library/LaunchAgents/`, patching the `__COMMIT_SCRIPT__` and `__SCHEDULE__` sentinels with real values
-9. `plutil -lint` the generated plist, then `launchctl bootstrap` and `kickstart` the job
+7. For every vault: `git init` if no `.git` exists, add the configured `origin` (or warn if the existing origin doesn't match), and offer to scaffold a recommended `.gitignore` if the vault doesn't have one (never overwrites an existing file — appends missing common patterns)
+8. Generate `~/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist` — `StartInterval` for `interval` mode, `WatchPaths` (one entry per vault) for `watch` mode — then `plutil -lint` it and `launchctl bootstrap` + `kickstart` the job
 
 ### ⚠️ macOS launchd / TCC caveat (both install methods)
 
@@ -139,7 +140,9 @@ brew services restart obsidian-lazy-commit
 launchctl kickstart -k gui/$(id -u)/com.user.obsidian-lazy-commit
 ```
 
-If the resulting log shows `Origin matches configured remote.` and `No changes, skipping.`, the job is healthy. If it still shows the TCC error, your install was bootstrapped from a non-Aqua context — re-run it from Terminal.app.
+The current version **detects this condition directly**: when the job can't read a vault path it logs `TCC/Background session detected` (with the session name and the exact re-bootstrap commands) instead of the misleading `git init failed`. Optionally, `commit.sh --self-heal` attempts the `launchctl bootout` + `bootstrap` back into the Aqua session on the first failed tick (default off — auto-rebootstrapping launchd jobs is deliberate). To enable it, run the job manually with that flag, e.g. prepend `--self-heal` to `ProgramArguments` in your plist — or just run the command yourself when you see the log line.
+
+If the resulting log shows `Origin matches configured remote.` and `No changes, skipping.`, the job is healthy. If it still shows the TCC detection line, your install was bootstrapped from a non-Aqua context — re-run it from Terminal.app.
 
 `brew services` will normally bootstrap the plist in the user's Aqua context, so the Homebrew install path "just works" for the common case of running `brew install` from a normal Terminal.app session.
 
@@ -152,7 +155,12 @@ Everything lives in one TOML file:
 ```
 
 ```toml
-# Schedule in seconds; defaults to 3600 if omitted. Minimum 60.
+# Trigger mode: "interval" (default, StartInterval) or "watch" (WatchPaths,
+# fires on filesystem changes, debounced ~5s in commit.sh).
+mode = "interval"
+
+# Schedule in seconds; used only in interval mode. Defaults to 3600 if
+# omitted. Minimum 60.
 schedule_seconds = 3600
 
 # One [[vaults]] entry per folder to watch and auto-commit.
@@ -160,6 +168,10 @@ schedule_seconds = 3600
 # `path` and `remote` may be absolute or use ~ ; the installer expands ~.
 # `remote` may be empty (commits will stay local).
 # `branch` defaults to "main" if omitted.
+# `pull_before_push` (default false): run `git pull --rebase origin <branch>`
+#   before push — for vaults shared across machines/agents. On conflict, push
+#   is skipped, files in conflict are logged, and the vault is skipped until
+#   you run `git rebase --continue` or `--abort`.
 [[vaults]]
 name = "main"
 path = "/Users/you/Documents/ObsidianVault"
@@ -171,6 +183,13 @@ name = "work"
 path = "~/WorkVault"
 remote = "git@github.com:acarmisc/work-vault.git"
 # branch omitted -> defaults to "main"
+
+[[vaults]]
+name = "shared"
+path = "/Users/you/SharedVault"
+remote = "git@github.com:acarmisc/shared-vault.git"
+pull_before_push = true
+# multi-machine vault: pulls --rebase before push
 
 [[vaults]]
 name = "scratch"
@@ -192,6 +211,34 @@ On every tick, for each vault, `commit.sh` re-checks the git state — it does n
 
 To resolve a mismatched `origin`, either edit the TOML to match the existing remote or run `git remote set-url origin <url>` in the vault directory.
 
+### Multi-machine vaults (`pull_before_push = true`)
+
+By default the tool assumes one machine pushes to one remote. If the same vault is edited from a second machine (a human laptop/desktop pair, or an AI agent running on another host), a plain `git push` can fail with non-fast-forward — forever, because the local branch diverges.
+
+For those vaults set `pull_before_push = true` in the `[[vaults]]` table. Each tick then commits locally, runs `git pull --rebase origin <branch>`, and pushes:
+
+- A clean rebase replays your commit on top of the remote and pushes — no non-fast-forward failure.
+- A **conflict** logs the exact files in conflict, skips the push, and leaves the working tree in the rebase state for you to resolve (`git rebase --continue` / `--abort`). The next tick detects the in-progress rebase and **skips the vault** so nothing new is committed into it.
+- Default `false` adds zero extra git operations — current single-machine behavior is unchanged.
+
+### Agent provenance in commit messages
+
+If any staged file has YAML frontmatter with `agent:` (and optionally `model:` / `session_id:`), the commit message keeps the `afm-cli`-generated subject and appends a **git trailer block** (`Key: value`, so `git log --grep "Agent-written"` finds it):
+
+```yaml
+---
+agent: opencode
+model: glm-5.2
+session_id: sess_01jxyz
+---
+```
+
+- Fewer than 5 agent-written files → one line each: `Agent-written: <file> (<agent>/<model>/<session>)`
+- 5+ agent-written files → summary: `Agent-written-files: N`, `Agents: agent/model (N files), ...`, `Sessions: <distinct session ids>`
+- No agent files staged → commit message unchanged
+
+This gives downstream consumers (e.g. a RAG/Bedrock pipeline over the vault) an audit trail of which chunks came from an agent, and lets you correlate agent sessions with the files they wrote. The tool only reads frontmatter that an agent already wrote — it never adds provenance itself.
+
 ### Adding or removing vaults later
 
 For **Homebrew installs**: re-run `obsidian-lazy-commit-setup`. It will:
@@ -199,7 +246,7 @@ For **Homebrew installs**: re-run `obsidian-lazy-commit-setup`. It will:
 - detect the existing `config.toml`
 - ask "Keep the existing vault list? [Y/n]"
 - if you say **No**, walk you through a fresh list (the old config is overwritten)
-- if you say **Yes**, only the schedule is re-asked and the plist is updated
+- if you say **Yes**, only the mode and schedule are re-asked and the plist is updated
 
 For **git-clone installs**: re-run `./install.sh` (or `bin/obsidian-lazy-commit-setup` directly). Same flow as above.
 
@@ -248,11 +295,11 @@ launchctl kickstart -k gui/$(id -u)/homebrew.mxcl.obsidian-lazy-commit
 launchctl kickstart -k gui/$(id -u)/com.user.obsidian-lazy-commit
 ```
 
-## Adjusting the schedule
+## Adjusting the schedule / trigger mode
 
 Two options:
 
-1. **Re-run setup** (recommended): `obsidian-lazy-commit-setup` for the Homebrew install, or `./install.sh` for the git-clone install. Say "Y" to keep the existing vault list and just change the schedule. The plist will be regenerated with the new `StartInterval`.
+1. **Re-run setup** (recommended): `obsidian-lazy-commit-setup` for the Homebrew install, or `./install.sh` for the git-clone install. Say "Y" to keep the existing vault list and just change the mode or schedule. The plist will be regenerated (`StartInterval` for `interval`, `WatchPaths` for `watch`).
 
 2. **Edit the plist directly:**
 
@@ -270,7 +317,13 @@ Two options:
    launchctl kickstart -k gui/$(id -u)/com.user.obsidian-lazy-commit
    ```
 
-For event-driven triggers instead of an interval (e.g. on file system changes), see the [launchd plist reference](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/ScheduledJobs.html) and replace `StartInterval` with a `WatchPaths` array.
+### Watch mode (`mode = "watch"`)
+
+Instead of a fixed interval, the plist gets a `WatchPaths` array (one path per vault) and `launchd` fires the job whenever any file under a vault changes. `commit.sh` debounces each wake by sleeping 5s, then re-checks `git status --porcelain` — so a burst of saves (Obsidian's temp-file + rename per note) produces **one** commit, not one per event.
+
+Latency vs `interval`: interval mode waits up to the full schedule; watch mode fires ~5s after the last save, plus commit/push time. Within a single run, multiple writes that land after the debounce still batch into one commit.
+
+> **Homebrew note:** `brew services` generates the plist from the formula's `service do` block, which supports only an interval. For watch mode, use a **git-clone install** (or hand-edit the plist — replace `StartInterval` with a `WatchPaths` array containing your vault paths, then re-kickstart).
 
 ## Troubleshooting
 
@@ -283,10 +336,10 @@ For event-driven triggers instead of an interval (e.g. on file system changes), 
 | `No git repo found. Running: git init` in logs | The vault's `path` was not a git repo on this tick | Normal on first run after install, or for any path that was never initialized. `commit.sh` inits it automatically; no action needed. |
 | `WARNING: existing origin 'X' differs from configured 'Y'` | You changed the TOML but the existing repo's `origin` was never updated | Run `cd <vault-path> && git remote set-url origin <new-url>`, or revert the TOML. The local commit still happens. |
 | Local commit landed but `Push skipped (no remote configured or origin mismatch)` | Empty `remote` in the TOML, or origin mismatch (see above) | Set `remote` in the TOML, or fix the existing `origin`. |
-| `WARNING: Push failed` in logs | Push itself failed (no network, auth, non-fast-forward, etc.) | `cd <vault-path> && git fetch` to diagnose; check `ssh -T git@github.com` for SSH-key issues; the local commit is already on `main`. |
-| `fatal: Unable to read current working directory: Operation not permitted` followed by `ERROR: git init failed` in logs | The launchd job is running in a non-Aqua (Background) session, so macOS TCC blocks git from reading files under `$HOME`. | Re-run setup and the initial `kickstart` from a regular Terminal.app (Aqua) window. See the "macOS launchd / TCC caveat" section above. |
+| `WARNING: Push failed` in logs | Push itself failed (no network, auth, non-fast-forward, etc.) | `cd <vault-path> && git fetch` to diagnose; check `ssh -T git@github.com` for SSH-key issues; the local commit is already on `main`. For non-fast-forward on machines racing, set `pull_before_push = true`. |
+| `ERROR: cannot read '<path>' — TCC/Background session detected` in logs | The launchd job is running in a non-Aqua (Background) session, so macOS TCC blocks it from reading files under `$HOME`. This is **not** a git failure. | Re-run setup and the initial `kickstart` from a regular Terminal.app (Aqua) window, or `commit.sh --self-heal` to re-bootstrap automatically. See the "macOS launchd / TCC caveat" section above. |
 | `plutil -lint` fails in setup output (git-clone install only) | Old `~/Library/LaunchAgents/...plist` with broken edits | Delete it: `rm ~/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist` and re-run setup. |
-| Job runs but logs are silent (git-clone install) | launchd can't find `commit.sh` (path moved) | Re-run setup to refresh the `__COMMIT_SCRIPT__` sentinel in the plist. |
+| Job runs but logs are silent (git-clone install) | launchd can't find `commit.sh` (path moved) | Re-run setup to regenerate the plist with the current `commit.sh` path. |
 | `python3 < 3.11 (no tomllib)` error | macOS older than 26 (or Homebrew Python not on PATH) | macOS 26 ships Python 3.11+; otherwise `brew install python`. |
 | Want to disable temporarily | — | Homebrew: `brew services stop obsidian-lazy-commit`. Git-clone: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist` |
 

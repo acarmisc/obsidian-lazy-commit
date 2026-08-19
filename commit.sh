@@ -14,6 +14,13 @@ else
   HOMEBREW_PREFIX="$HOMEBREW_PREFIX_SENTINEL"
 fi
 
+# --self-heal: if a vault is unreadable (TCC/Background session), attempt to
+# re-bootstrap the launchd job into the Aqua session automatically.
+SELF_HEAL=0
+case "${1:-}" in
+  --self-heal) SELF_HEAL=1 ;;
+esac
+
 CONFIG_DIR="${OBSIDIAN_LAZY_COMMIT_CONFIG_DIR:-$HOME/.config/obsidian-lazy-commit}"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 
@@ -67,6 +74,11 @@ if not isinstance(vaults, list) or not vaults:
     print("ERROR: config must define a non-empty [[vaults]] array.", file=sys.stderr)
     sys.exit(4)
 
+mode = data.get("mode", "interval")
+if mode not in ("interval", "watch"):
+    print("ERROR: top-level 'mode' must be 'interval' or 'watch'.", file=sys.stderr)
+    sys.exit(11)
+
 seen = set()
 cleaned = []
 for i, v in enumerate(vaults):
@@ -77,6 +89,7 @@ for i, v in enumerate(vaults):
     pth = v.get("path")
     remote = v.get("remote", "")
     branch = v.get("branch", "main")
+    pull = v.get("pull_before_push", False)
     if not isinstance(name, str) or not name.strip():
         print(f"ERROR: vaults[{i}].name is required and must be a non-empty string.", file=sys.stderr)
         sys.exit(6)
@@ -89,18 +102,23 @@ for i, v in enumerate(vaults):
     if not isinstance(branch, str) or not branch.strip():
         print(f"ERROR: vaults[{i}].branch must be a non-empty string.", file=sys.stderr)
         sys.exit(9)
+    if not isinstance(pull, bool):
+        print(f"ERROR: vaults[{i}].pull_before_push must be true or false.", file=sys.stderr)
+        sys.exit(12)
     if name in seen:
         print(f"ERROR: duplicate vault name '{name}'. Names must be unique.", file=sys.stderr)
         sys.exit(10)
     seen.add(name)
-    cleaned.append({"name": name, "path": os.path.expanduser(pth), "remote": remote, "branch": branch})
+    cleaned.append({"name": name, "path": os.path.expanduser(pth), "remote": remote, "branch": branch, "pull": 1 if pull else 0})
 
+print(f"MODE={mode}")
 print(f"VAULT_COUNT={len(cleaned)}")
 for i, v in enumerate(cleaned):
     print(f"VAULT_{i}_NAME={v['name']}")
     print(f"VAULT_{i}_PATH={v['path']}")
     print(f"VAULT_{i}_REMOTE={v['remote']}")
     print(f"VAULT_{i}_BRANCH={v['branch']}")
+    print(f"VAULT_{i}_PULL={v['pull']}")
 PY
 }
 
@@ -121,6 +139,14 @@ fi
 
 log "" "Started; processing $VAULT_COUNT vault(s)."
 
+# Debounce for watch mode: launchd fires WatchPaths on every save (Obsidian
+# does temp-file + rename per note), so let a burst settle before deciding.
+# In-progress saves after this window still batch into the next commit.
+if [ "${MODE:-interval}" = "watch" ]; then
+  log "" "Watch mode: debouncing 5s to let save bursts settle..."
+  sleep 5
+fi
+
 overall_rc=0
 
 for ((i = 0; i < VAULT_COUNT; i++)); do
@@ -128,6 +154,7 @@ for ((i = 0; i < VAULT_COUNT; i++)); do
   path="VAULT_${i}_PATH";   path="${!path}"
   remote="VAULT_${i}_REMOTE"; remote="${!remote}"
   branch="VAULT_${i}_BRANCH"; branch="${!branch}"
+  pull="VAULT_${i}_PULL";   pull="${!pull}"
 
   log "$name" "Begin"
   log "$name" "Path: $path"
@@ -147,6 +174,34 @@ for ((i = 0; i < VAULT_COUNT; i++)); do
   if ! cd "$path"; then
     log "$name" "ERROR: could not cd into '$path'. Skipping."
     overall_rc=1
+    continue
+  fi
+
+  # TCC check: in a non-Aqua (Background) launchd session macOS blocks external
+  # tools from reading files under $HOME. The symptom looks like a broken repo
+  # ("git init failed") but is really a session-type problem. Detect it up
+  # front and point to the actual fix.
+  if ! /bin/ls "$path" >/dev/null 2>&1; then
+    session_name="$(launchctl managername 2>/dev/null || echo unknown)"
+    log "$name" "ERROR: cannot read '$path' — TCC/Background session detected (session='$session_name')."
+    log "$name" "This is NOT a git failure. Re-bootstrap the job from Terminal.app (Aqua):"
+    log "$name" "  brew services restart obsidian-lazy-commit"
+    log "$name" "  launchctl kickstart -k gui/$(id -u)/com.user.obsidian-lazy-commit"
+    overall_rc=1
+    if [ "$SELF_HEAL" -eq 1 ]; then
+      PLIST_DST="$HOME/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist"
+      if [ -f "$PLIST_DST" ]; then
+        log "$name" "Self-healing: re-bootstrapping job into Aqua session..."
+        launchctl bootout "gui/$(id -u)" "$PLIST_DST" 2>/dev/null || true
+        if launchctl bootstrap "gui/$(id -u)" "$PLIST_DST" 2>/dev/null; then
+          log "$name" "Self-healed: job re-bootstrapped into Aqua. Next tick should work."
+        else
+          log "$name" "WARNING: self-heal bootstrap failed. Do it manually from Terminal.app."
+        fi
+      else
+        log "$name" "Self-heal skipped: no plist at $PLIST_DST."
+      fi
+    fi
     continue
   fi
 
@@ -218,6 +273,14 @@ for ((i = 0; i < VAULT_COUNT; i++)); do
     fi
   fi
 
+  # 3a. Guard: an in-progress rebase (from a prior pull --rebase conflict)
+  # must not receive new commits. Skip until the user resolves it.
+  if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+    log "$name" "WARNING: rebase in progress — skipping this vault. Resolve with 'git rebase --continue' or 'git rebase --abort' in '$path'."
+    overall_rc=1
+    continue
+  fi
+
   # 3. Detect changes.
   if ! CHANGES=$(git status --porcelain 2>/dev/null); then
     log "$name" "ERROR: 'git status' failed. Skipping."
@@ -238,7 +301,66 @@ for ((i = 0; i < VAULT_COUNT; i++)); do
     continue
   fi
 
-  # 5. Generate commit message via afm-cli; fall back to timestamp on failure.
+  # 5. Scan staged files for agent provenance frontmatter and build a git
+  #     trailer when present. Stays empty (commit unchanged) when no staged
+  #     file carries agent/model/session_id frontmatter.
+  TRAILER=""
+  if [ -n "$CHANGES" ]; then
+    TRAILER=$(python3 -c '
+import re, subprocess, sys, collections
+
+files = subprocess.run(["git", "diff", "--cached", "--name-only", "-z"],
+                       capture_output=True, text=True).stdout.split("\0")
+found = []
+for f in files:
+    if not f:
+        continue
+    try:
+        with open(f, "r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(4096)
+    except OSError:
+        continue
+    m = re.match(r"\A---\s*\n(.*?)\n---", head, re.S | re.M)
+    if not m:
+        continue
+    fm = m.group(1)
+
+    def get(key):
+        mm = re.search(r"^" + key + r"\s*:\s*(.+)$", fm, re.M)
+        return mm.group(1).strip().strip(chr(34) + chr(39)) if mm else ""
+
+    agent = get("agent")
+    if not agent:
+        continue
+    found.append((f, agent, get("model"), get("session_id")))
+
+if not found:
+    sys.exit(0)
+
+def label(a, m, s):
+    return "/".join(p for p in (a, m, s) if p)
+
+if len(found) < 5:
+    for f, a, m, s in found:
+        print("Agent-written: {} ({})".format(f, label(a, m, s)))
+else:
+    groups = collections.Counter(label(a, m, "") for _, a, m, _ in found)
+    sessions = []
+    for _, a, m, s in found:
+        if s and s not in sessions:
+            sessions.append(s)
+    agents = ", ".join(
+        "{} ({} file{})".format(k, v, "s" if v > 1 else "")
+        for k, v in groups.most_common()
+    )
+    print("Agent-written-files: {}".format(len(found)))
+    print("Agents: {}".format(agents))
+    if sessions:
+        print("Sessions: {}".format(", ".join(sessions)))
+' 2>/dev/null)
+  fi
+
+  # 6. Generate commit message via afm-cli; fall back to timestamp on failure.
   if command -v afm-cli >/dev/null 2>&1; then
     MSG=$(afm-cli -s "Generate a concise two-line git commit message (max 250 chars, no quotes). Summarize the diff giving a brief summary of the changes." -p "$DIFF" 2>/dev/null || true)
   else
@@ -249,8 +371,18 @@ for ((i = 0; i < VAULT_COUNT; i++)); do
   fi
   MSG=$(echo "$MSG" | head -1 | cut -c1-72)
 
-  # 6. Commit.
-  if git commit -m "$MSG"; then
+  # 7. Commit. With provenance, use a message file (subject + blank line +
+  #     trailer) so git stores the trailer parseable by `git trailer`.
+  COMMIT_OK=0
+  if [ -n "$TRAILER" ]; then
+    COMMIT_MSG_FILE="$(mktemp)"
+    printf '%s\n\n%s\n' "$MSG" "$TRAILER" > "$COMMIT_MSG_FILE"
+    git commit -F "$COMMIT_MSG_FILE" && COMMIT_OK=1
+    rm -f "$COMMIT_MSG_FILE"
+  else
+    git commit -m "$MSG" && COMMIT_OK=1
+  fi
+  if [ "$COMMIT_OK" -eq 1 ]; then
     log "$name" "Committed: $MSG"
   else
     log "$name" "ERROR: Commit failed. Skipping push."
@@ -258,7 +390,23 @@ for ((i = 0; i < VAULT_COUNT; i++)); do
     continue
   fi
 
-  # 7. Push (only if we still have a remote we trust).
+  # 8. Optional pull --rebase before push (multi-machine vaults). Always skips
+  #     push on rebase conflict; the next tick's rebase-in-progress guard takes
+  #     over until the user resolves it manually.
+  if [ -n "$remote" ] && [ "${pull:-0}" -eq 1 ]; then
+    log "$name" "pull_before_push: running 'git pull --rebase origin $branch'..."
+    if ! git pull --rebase origin "$branch" >/dev/null 2>&1; then
+      log "$name" "WARNING: pull --rebase failed (conflict). Push skipped. Resolve manually in '$path'."
+      if UNMERGED=$(git diff --name-only --diff-filter=U 2>/dev/null); then
+        [ -n "$UNMERGED" ] && log "$name" "WARNING: conflicting files: $(echo "$UNMERGED" | tr '\n' ' ')"
+      fi
+      log "$name" "WARNING: next tick will skip this vault until you run 'git rebase --continue' or 'git rebase --abort'."
+      overall_rc=1
+      continue
+    fi
+  fi
+
+  # 9. Push (only if we still have a remote we trust).
   if [ -n "$remote" ]; then
     PUSH_OUTPUT=$(git push 2>&1) || PUSH_RC=$?
     echo "$PUSH_OUTPUT" >> /tmp/obsidian-lazy-commit.log

@@ -123,21 +123,34 @@ declare -a EXISTING_NAMES=()
 declare -a EXISTING_PATHS=()
 declare -a EXISTING_REMOTES=()
 declare -a EXISTING_BRANCHES=()
+declare -a EXISTING_PULLS=()
+EXISTING_MODE=""
+EXISTING_SCHEDULE=""
 
 if [ -f "$CONFIG_FILE" ]; then
   if EXISTING=$(CONFIG_FILE_PATH="$CONFIG_FILE" python3 - <<'PY' 2>/dev/null
 import os, tomllib
 with open(os.environ["CONFIG_FILE_PATH"], "rb") as f:
     data = tomllib.load(f)
+print(f"__MODE__={data.get('mode', 'interval')}")
+print(f"__SCHEDULE__={data.get('schedule_seconds', 3600)}")
 for v in (data.get("vaults") or []):
-    print(f"{v.get('name','')}|{v.get('path','')}|{v.get('remote','')}|{v.get('branch','main')}")
+    print(f"{v.get('name','')}|{v.get('path','')}|{v.get('remote','')}|{v.get('branch','main')}|{1 if v.get('pull_before_push') else 0}")
 PY
   ); then
-    while IFS='|' read -r n p r b; do
-      EXISTING_NAMES+=("$n")
-      EXISTING_PATHS+=("$p")
-      EXISTING_REMOTES+=("$r")
-      EXISTING_BRANCHES+=("$b")
+    while IFS= read -r line; do
+      case "$line" in
+        __MODE__=*) EXISTING_MODE="${line#__MODE__=}" ;;
+        __SCHEDULE__=*) EXISTING_SCHEDULE="${line#__SCHEDULE__=}" ;;
+        *)
+          IFS='|' read -r n p r b pull <<< "$line"
+          EXISTING_NAMES+=("$n")
+          EXISTING_PATHS+=("$p")
+          EXISTING_REMOTES+=("$r")
+          EXISTING_BRANCHES+=("$b")
+          EXISTING_PULLS+=("$pull")
+          ;;
+      esac
     done <<< "$EXISTING"
   fi
   log "Existing config found with ${#EXISTING_NAMES[@]} vault(s)."
@@ -151,12 +164,14 @@ declare -a VAULT_NAMES=()
 declare -a VAULT_PATHS=()
 declare -a VAULT_REMOTES=()
 declare -a VAULT_BRANCHES=()
+declare -a VAULT_PULLS=()
 
 if [[ "$KEEP_ANSWER" =~ ^[Yy]$ ]] && [ "${#EXISTING_NAMES[@]}" -gt 0 ]; then
   VAULT_NAMES=("${EXISTING_NAMES[@]}")
   VAULT_PATHS=("${EXISTING_PATHS[@]}")
   VAULT_REMOTES=("${EXISTING_REMOTES[@]}")
   VAULT_BRANCHES=("${EXISTING_BRANCHES[@]}")
+  VAULT_PULLS=("${EXISTING_PULLS[@]}")
 else
   echo
   log "Add vaults. Enter an empty line at the name prompt to finish."
@@ -222,6 +237,7 @@ else
     VAULT_PATHS+=("$PATH_ABS")
     VAULT_REMOTES+=("$REMOTE_INPUT")
     VAULT_BRANCHES+=("$BRANCH_INPUT")
+    VAULT_PULLS+=("0")
     log "Added vault '$NAME_INPUT' -> $PATH_ABS"
     echo
   done
@@ -232,15 +248,31 @@ if [ "${#VAULT_NAMES[@]}" -eq 0 ]; then
   exit 1
 fi
 
-# Optional schedule override.
+# Optional trigger mode: interval (StartInterval, current behavior) or watch
+# (WatchPaths, fires on filesystem changes, debounced in commit.sh).
 echo
-read -r -p "[setup] Schedule in seconds (default: $SCHEDULE_DEFAULT): " SCHEDULE_INPUT
-SCHEDULE_INPUT="${SCHEDULE_INPUT:-$SCHEDULE_DEFAULT}"
-if ! [[ "$SCHEDULE_INPUT" =~ ^[0-9]+$ ]] || [ "$SCHEDULE_INPUT" -lt 60 ]; then
-  err "schedule must be an integer >= 60."
-  exit 1
+MODE_DEFAULT="interval"
+read -r -p "[setup] Trigger mode (interval|watch) [default: ${EXISTING_MODE:-$MODE_DEFAULT}]: " MODE_INPUT
+MODE="${MODE_INPUT:-${EXISTING_MODE:-$MODE_DEFAULT}}"
+case "$MODE" in
+  interval|watch) ;;
+  *) err "mode must be 'interval' or 'watch'."; exit 1 ;;
+esac
+
+# Optional schedule override (interval mode only; watch mode ignores it).
+echo
+if [ "$MODE" = "interval" ]; then
+  read -r -p "[setup] Schedule in seconds (default: ${EXISTING_SCHEDULE:-$SCHEDULE_DEFAULT}): " SCHEDULE_INPUT
+  SCHEDULE_INPUT="${SCHEDULE_INPUT:-${EXISTING_SCHEDULE:-$SCHEDULE_DEFAULT}}"
+  if ! [[ "$SCHEDULE_INPUT" =~ ^[0-9]+$ ]] || [ "$SCHEDULE_INPUT" -lt 60 ]; then
+    err "schedule must be an integer >= 60."
+    exit 1
+  fi
+  SENTINEL_SCHEDULE="$SCHEDULE_INPUT"
+else
+  SCHEDULE_INPUT="${EXISTING_SCHEDULE:-$SCHEDULE_DEFAULT}"
+  SENTINEL_SCHEDULE=""
 fi
-SENTINEL_SCHEDULE="$SCHEDULE_INPUT"
 
 # --- Write the TOML config -----------------------------------------------------
 {
@@ -249,6 +281,9 @@ SENTINEL_SCHEDULE="$SCHEDULE_INPUT"
   echo "# name must be unique and is used in log lines."
   echo "# remote may be empty (commits will stay local)."
   echo "# branch defaults to \"main\" if omitted."
+  echo "# mode: \"interval\" (StartInterval) or \"watch\" (WatchPaths, debounced)."
+  echo "# pull_before_push: run 'git pull --rebase' before push (multi-machine vaults)."
+  echo "mode = \"$MODE\""
   echo "schedule_seconds = $SCHEDULE_INPUT"
   echo
   for i in "${!VAULT_NAMES[@]}"; do
@@ -256,6 +291,7 @@ SENTINEL_SCHEDULE="$SCHEDULE_INPUT"
     p="${VAULT_PATHS[$i]}"
     r="${VAULT_REMOTES[$i]}"
     b="${VAULT_BRANCHES[$i]}"
+    pull="${VAULT_PULLS[$i]:-0}"
     echo "[[vaults]]"
     echo "name = \"$n\""
     echo "path = \"$p\""
@@ -265,6 +301,9 @@ SENTINEL_SCHEDULE="$SCHEDULE_INPUT"
     if [ -n "$b" ] && [ "$b" != "main" ]; then
       echo "branch = \"$b\""
     fi
+    if [ "$pull" -eq 1 ]; then
+      echo "pull_before_push = true"
+    fi
     echo
   done
 } > "$CONFIG_FILE"
@@ -272,6 +311,19 @@ SENTINEL_SCHEDULE="$SCHEDULE_INPUT"
 log "Wrote config to $CONFIG_FILE with ${#VAULT_NAMES[@]} vault(s)."
 
 # --- Init / validate git per vault --------------------------------------------
+DEFAULT_GITIGNORE='.DS_Store
+
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.trash/
+
+public/
+.quartz-cache/
+
+node_modules/
+'
+
 for i in "${!VAULT_NAMES[@]}"; do
   n="${VAULT_NAMES[$i]}"
   p="${VAULT_PATHS[$i]}"
@@ -298,6 +350,30 @@ for i in "${!VAULT_NAMES[@]}"; do
       log "[$n] Origin already set to $r"
     fi
   fi
+
+  # Scaffold a default .gitignore so `git add -A` stays clean (no .DS_Store,
+  # .obsidian/workspace*.json, .trash/, node_modules/, Quartz build output).
+  if [ ! -e "$p/.gitignore" ]; then
+    read -r -p "[setup] No .gitignore found in '$p'. Add the recommended Obsidian .gitignore? [Y/n] " GI_ANSWER
+    GI_ANSWER="${GI_ANSWER:-Y}"
+    if [[ "$GI_ANSWER" =~ ^[Yy]$ ]]; then
+      printf '%s' "$DEFAULT_GITIGNORE" > "$p/.gitignore"
+      log "[$n] Created $p/.gitignore"
+    fi
+  elif [ ! -s "$p/.gitignore" ]; then
+    printf '%s' "$DEFAULT_GITIGNORE" > "$p/.gitignore"
+    log "[$n] .gitignore was empty — wrote recommended content."
+  elif ! grep -q '^\.DS_Store$' "$p/.gitignore"; then
+    read -r -p "[setup] '$p/.gitignore' exists but lacks common Obsidian patterns. Append them? [Y/n] " GI_APPEND
+    GI_APPEND="${GI_APPEND:-Y}"
+    if [[ "$GI_APPEND" =~ ^[Yy]$ ]]; then
+      {
+        printf '\n# Added by obsidian-lazy-commit-setup\n'
+        printf '%s' "$DEFAULT_GITIGNORE"
+      } >> "$p/.gitignore"
+      log "[$n] Appended recommended patterns to $p/.gitignore"
+    fi
+  fi
 done
 
 # --- Load the launchd job ------------------------------------------------------
@@ -312,20 +388,61 @@ if [ "$BREW_INSTALL" -eq 1 ]; then
   exit 0
 fi
 
-# Git-clone install: do the plist install manually.
+# Git-clone install: do the plist install manually. Generate the plist inline
+# so interval (StartInterval) and watch (WatchPaths) modes both produce a
+# valid launchd job.
 mkdir -p "$(dirname "$PLIST_DST")"
-cp "$PLIST_SRC" "$PLIST_DST"
-sed -i.bak \
-  -e "s|__COMMIT_SCRIPT__|$COMMIT_SCRIPT|g" \
-  -e "s|__SCHEDULE__|$SENTINEL_SCHEDULE|g" \
-  "$PLIST_DST"
-rm -f "$PLIST_DST.bak"
+{
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.obsidian-lazy-commit</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>OBSIDIAN_LAZY_COMMIT_CONFIG_DIR</key>
+        <string>$CONFIG_DIR</string>
+    </dict>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$COMMIT_SCRIPT</string>
+    </array>
+EOF
+  if [ "$MODE" = "watch" ]; then
+    echo "    <key>WatchPaths</key>"
+    echo "    <array>"
+    for wp in "${VAULT_PATHS[@]}"; do
+      if [ ! -d "$wp" ]; then
+        err "vault path '$wp' does not exist — cannot use it as a WatchPath. Aborting."
+        exit 1
+      fi
+      echo "        <string>$wp</string>"
+    done
+    echo "    </array>"
+  else
+    echo "    <key>StartInterval</key>"
+    echo "    <integer>$SCHEDULE_INPUT</integer>"
+  fi
+  cat <<EOF
+    <key>StandardOutPath</key>
+    <string>/tmp/obsidian-lazy-commit.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/obsidian-lazy-commit.err</string>
+</dict>
+</plist>
+EOF
+} > "$PLIST_DST"
 
 if ! plutil -lint "$PLIST_DST" >/dev/null 2>&1; then
   err "generated plist failed plutil -lint. Aborting."
   exit 1
 fi
-log "Installed plist to $PLIST_DST (commit.sh=$COMMIT_SCRIPT, every ${SENTINEL_SCHEDULE}s)"
+log "Installed plist to $PLIST_DST (commit.sh=$COMMIT_SCRIPT, mode=$MODE${SENTINEL_SCHEDULE:+, every ${SENTINEL_SCHEDULE}s})"
 
 UID_NUM="$(id -u)"
 launchctl bootout "gui/$UID_NUM" "$PLIST_DST" 2>/dev/null || true
