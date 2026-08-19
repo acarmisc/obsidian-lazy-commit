@@ -9,20 +9,13 @@ class ObsidianLazyCommit < Formula
   depends_on :macos => :tahoe
 
   def install
-    # Binaries (thin wrappers that exec the real scripts).
+    # Public entry points.
     bin.install "bin/obsidian-lazy-commit"
     bin.install "bin/obsidian-lazy-commit-setup"
-    bin.install "bin/obsidian-lazy-commit-commit"
 
-    # The actual per-tick script and plist template live in share/, so
-    # they survive `brew upgrade` without leaving stale copies in bin/.
-    (share/"obsidian-lazy-commit").install "commit.sh"
-    (share/"obsidian-lazy-commit").install "com.user.obsidian-lazy-commit.plist"
-
-    # Substitute the HOMEBREW_PREFIX sentinel in commit.sh so the
-    # wrapper can locate the real script via $HOMEBREW_PREFIX/share/...
-    inreplace (share/"obsidian-lazy-commit/commit.sh"),
-              "@@HOMEBREW_PREFIX@@", HOMEBREW_PREFIX.to_s
+    # The per-tick script. libexec is the conventional place for scripts a
+    # formula runs itself; it survives `brew upgrade` without stale copies.
+    libexec.install "commit.sh"
 
     # Sample config so users have something to copy from.
     # Only write if it doesn't exist — re-installs shouldn't clobber
@@ -67,11 +60,10 @@ class ObsidianLazyCommit < Formula
     # a regular Terminal.app session so the job is bootstrapped
     # in Aqua and inherits the right TCC rights. If the job logs
     # show "fatal: Unable to read current working directory:
-    # Operation not permitted", re-run the start from Terminal.app.
-    run [opt_bin/"obsidian-lazy-commit-commit"]
+    # Operation not permitted", run `obsidian-lazy-commit --self-heal`.
+    run [libexec/"commit.sh"]
     environment_variables(
-      PATH:            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-      HOMEBREW_PREFIX: HOMEBREW_PREFIX.to_s,
+      PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
     )
     keep_alive false
     run_at_load false
@@ -102,9 +94,8 @@ class ObsidianLazyCommit < Formula
   end
 
   test do
-    # Smoke test: the wrappers should at least respond to `--help`-style
-    # invocations. We invoke the default wrapper, which will exit with
-    # an instructive message if no config exists.
+    # Smoke test: the wrapper should exit with an instructive message when
+    # no config exists (also verifies the entry point runs).
     assert_match "obsidian-lazy-commit-setup",
                  shell_output("#{bin}/obsidian-lazy-commit 2>&1", 1)
   end

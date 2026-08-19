@@ -1,19 +1,11 @@
 #!/bin/bash
 # Back-compat shim. Prefer one of:
 #   brew uninstall obsidian-lazy-commit       # Homebrew install
-#   ./bin/obsidian-lazy-commit-uninstall      # git-clone install
+#   ./uninstall.sh                            # git-clone install
 #
-# If neither is present, falls back to removing the original
-# git-clone-install plist (com.user.obsidian-lazy-commit.plist).
+# Removes the git-clone-install plist (com.user.obsidian-lazy-commit.plist).
 
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# Prefer a dedicated uninstaller if the user has the new layout.
-if [ -x "$SCRIPT_DIR/bin/obsidian-lazy-commit-uninstall" ]; then
-  exec "$SCRIPT_DIR/bin/obsidian-lazy-commit-uninstall"
-fi
 
 # Brew install hint.
 if command -v brew >/dev/null 2>&1 && brew list obsidian-lazy-commit >/dev/null 2>&1; then

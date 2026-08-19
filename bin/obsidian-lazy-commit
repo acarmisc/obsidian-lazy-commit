@@ -4,6 +4,10 @@
 # Default entry point. If no config exists, this is a friendly pointer to
 # the setup command. If a config exists, this runs the per-tick commit
 # immediately (useful for manual kicks).
+#
+# Resolves commit.sh for both install layouts:
+#   - brew:   <prefix>/libexec/commit.sh   (bin -> libexec are siblings)
+#   - git-clone: <repo>/bin/../commit.sh
 
 set -euo pipefail
 
@@ -16,4 +20,12 @@ if [ ! -f "$CONFIG_FILE" ]; then
   exit 1
 fi
 
-exec "$(dirname "$0")/obsidian-lazy-commit-commit"
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+for candidate in "$BIN_DIR/../libexec/commit.sh" "$BIN_DIR/../commit.sh" "$BIN_DIR/commit.sh"; do
+  if [ -f "$candidate" ]; then
+    exec "$candidate"
+  fi
+done
+
+echo "obsidian-lazy-commit: cannot locate commit.sh (tried libexec and repo root)" >&2
+exit 1

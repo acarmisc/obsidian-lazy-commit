@@ -1,19 +1,6 @@
 #!/bin/bash
 set -uo pipefail
 
-# HOMEBREW_PREFIX_SENTINEL is substituted by the Homebrew formula at install
-# time. The string "@@HOMEBREW_PREFIX@@" is a sentinel that is never a valid
-# filesystem path, so we can distinguish a git-clone install (sentinel intact)
-# from a brew install (sentinel replaced with a real prefix like
-# /opt/homebrew). The commented example below shows what the file looks like
-# after substitution; do not edit it back to a real path.
-HOMEBREW_PREFIX_SENTINEL="@@HOMEBREW_PREFIX@@"
-if [ "$HOMEBREW_PREFIX_SENTINEL" = "@@HOMEBREW_PREFIX@@" ]; then
-  HOMEBREW_PREFIX=""
-else
-  HOMEBREW_PREFIX="$HOMEBREW_PREFIX_SENTINEL"
-fi
-
 # --self-heal: if a vault is unreadable (TCC/Background session), attempt to
 # re-bootstrap the launchd job into the Aqua session automatically.
 SELF_HEAL=0
@@ -42,11 +29,7 @@ die() {
 }
 
 if [ ! -f "$CONFIG_FILE" ]; then
-  if [ -n "$HOMEBREW_PREFIX" ]; then
-    die "Config not found at $CONFIG_FILE. Run 'obsidian-lazy-commit-setup' (Homebrew) to create one."
-  else
-    die "Config not found at $CONFIG_FILE. Run ./install.sh first."
-  fi
+  die "Config not found at $CONFIG_FILE. Run 'obsidian-lazy-commit-setup' first to create one."
 fi
 
 # Parse TOML config with Python (tomllib is stdlib in 3.11+).

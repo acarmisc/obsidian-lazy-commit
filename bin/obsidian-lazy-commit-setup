@@ -17,15 +17,11 @@ SENTINEL_SCHEDULE="$SCHEDULE_DEFAULT"
 DEFAULT_REPO_URL="git@github.com:acarmisc/-obsidian-lazy-commit.git"
 REPO_DIR_DEFAULT="$HOME/.local/share/obsidian-lazy-commit"
 
-# Detect Homebrew install. The formula sets HOMEBREW_PREFIX in the wrapper
-# script's environment. We also probe the well-known Homebrew bin path.
+# Detect Homebrew install by our own location: the brew formula installs this
+# script into the formula's bin directory.
 BREW_INSTALL=0
-if [ -n "${HOMEBREW_PREFIX:-}" ] && [ "${0}" != "${0#/usr/local/bin}" ] && [ "${0}" != "${0#/opt/homebrew/bin}" ]; then
-  BREW_INSTALL=1
-fi
-# More reliable detection: if our own path is inside a Homebrew prefix.
 case "$0" in
-  /opt/homebrew/bin/*|/usr/local/bin/*)
+  /opt/homebrew/bin/*|/usr/local/bin/*|/home/linuxbrew/.linuxbrew/bin/*)
     BREW_INSTALL=1
     ;;
 esac
@@ -61,25 +57,16 @@ if [ "$BREW_INSTALL" -eq 1 ] && ! command -v afm-cli &>/dev/null; then
   exit 1
 fi
 
-# --- Locations -----------------------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
 # The commit script lives next to this file in a git-clone install, or in
-# HOMEBREW_PREFIX/share/obsidian-lazy-commit/ in a brew install.
+# <brew prefix>/libexec/ in a brew install. Only the git-clone path needs a
+# concrete location (brew services builds the plist from the formula itself).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLIST_DST="$HOME/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist"
 if [ "$BREW_INSTALL" -eq 1 ]; then
-  COMMIT_SCRIPT="${HOMEBREW_PREFIX:-/opt/homebrew}/share/obsidian-lazy-commit/commit.sh"
-  PLIST_SRC="${HOMEBREW_PREFIX:-/opt/homebrew}/share/obsidian-lazy-commit/com.user.obsidian-lazy-commit.plist"
-  PLIST_DST="$HOME/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist"
+  COMMIT_SCRIPT=""
 else
   COMMIT_SCRIPT="$SCRIPT_DIR/../commit.sh"
-  if [ ! -f "$COMMIT_SCRIPT" ]; then
-    COMMIT_SCRIPT="$SCRIPT_DIR/commit.sh"
-  fi
-  PLIST_SRC="$SCRIPT_DIR/../com.user.obsidian-lazy-commit.plist"
-  if [ ! -f "$PLIST_SRC" ]; then
-    PLIST_SRC="$SCRIPT_DIR/com.user.obsidian-lazy-commit.plist"
-  fi
-  PLIST_DST="$HOME/Library/LaunchAgents/com.user.obsidian-lazy-commit.plist"
+  [ -f "$COMMIT_SCRIPT" ] || COMMIT_SCRIPT="$SCRIPT_DIR/commit.sh"
 fi
 
 CONFIG_DIR="$HOME/.config/obsidian-lazy-commit"
