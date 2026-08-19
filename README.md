@@ -33,10 +33,10 @@ If `afm-cli` fails (e.g. Apple Intelligence not available, wrong chip, wrong mac
 | macOS | 26.0 (Tahoe) or later | Required for Apple Intelligence. |
 | Hardware | Apple Silicon (M1+) | Intel Macs are unsupported by Apple Intelligence. |
 | [Apple Intelligence](https://support.apple.com/en-us/121112) | enabled in System Settings | Settings → Apple Intelligence → toggle on. Model downloads in the background. |
-| [Homebrew](https://brew.sh) | any recent | Used to install `afm-cli` and as a prerequisite gate. |
+| [Homebrew](https://brew.sh) | any recent | Only needed to install `afm-cli`; not a requirement for the git-clone install if you skip it. |
 | `git` | any recent | Pre-installed on macOS command line tools, but `install.sh` checks for it. |
 | `python3` | 3.11 or later | Used to parse the TOML config (`tomllib` is stdlib in 3.11+). Pre-installed on macOS 26. |
-| `afm-cli` | latest from `CreevekCZ/tap` | Installed automatically by `install.sh` if missing. |
+| `afm-cli` | latest from `CreevekCZ/tap` | **Optional.** Generates natural-language commit subjects; without it, subjects fall back to `auto-sync: <timestamp>`. Install with `brew install creevekcz/tap/afm-cli`. |
 | SSH key | one registered with GitHub | Only required if pushing over `git@github.com:...`. |
 
 Verify your environment before installing:
@@ -106,7 +106,7 @@ cd obsidian-lazy-commit
 
 `install.sh` is now a thin shim around `bin/obsidian-lazy-commit-setup` — it just delegates. The actual setup script will:
 
-1. Check for `brew`, `git`, `python3`, and `afm-cli` (installs `afm-cli` via Homebrew if missing — installs `CreevekCZ/tap` first)
+1. Check for `git` and `python3`, and warn (not fail) if `afm-cli` is missing — commit messages will fall back to timestamps
 2. If a **legacy** `~/.config/obsidian-lazy-commit/config` (the old `VAULT_DIR=...` file) is detected, offer to migrate it into the new TOML format
 3. If a `config.toml` already exists, offer to keep the existing vault list (and only change the mode/schedule), or start fresh
 4. Otherwise, ask for each vault's `path` (the vault name is derived from the folder name; an empty path finishes the list) and its `remote` URL (empty = commits stay local). The branch defaults to `main` but can be edited later in `config.toml`
@@ -329,7 +329,7 @@ Latency vs `interval`: interval mode waits up to the full schedule; watch mode f
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `afm-cli not found` during setup | Homebrew not installed | Install [Homebrew](https://brew.sh) first, re-run setup. |
+| Setup warns `afm-cli not found` | `afm-cli` is not installed (optional) | Commit subjects fall back to `auto-sync: <timestamp>`. Install later with `brew install creevekcz/tap/afm-cli`. |
 | `Error: Formula reports different checksum` from `brew install` | The formula's `sha256` doesn't match the v1.1.0 source tarball that GitHub serves (the local `git archive` and GitHub's archive produce different shas) | Re-`brew install`; if it persists, update the sha in `Formula/obsidian-lazy-commit.rb` to match `shasum -a 256` of the GitHub tarball and push a new commit. |
 | Commit message is always `auto-sync: YYYY-MM-DD_HH:MM` | `afm-cli` failing (Apple Intelligence off, Intel Mac, wrong macOS) | Enable Apple Intelligence in System Settings, or update to macOS 26+ on Apple Silicon. |
 | `ERROR: vault path 'X' does not exist. Skipping.` in logs | A vault's `path` in the TOML points at a missing folder | Fix the path, or re-run setup to recreate the dir (it will ask before creating). |

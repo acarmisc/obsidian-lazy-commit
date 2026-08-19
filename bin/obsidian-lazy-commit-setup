@@ -37,23 +37,12 @@ if ! command -v python3 &>/dev/null; then
   err "python3 is required to parse the TOML config."
   exit 1
 fi
-if [ "$BREW_INSTALL" -eq 0 ] && ! command -v afm-cli &>/dev/null; then
-  log "afm-cli not found, installing via Homebrew..."
-  if ! command -v brew &>/dev/null; then
-    err "Homebrew is required to install afm-cli (or install it manually)."
-    err "Install Homebrew first: https://brew.sh"
-    exit 1
-  fi
-  brew tap CreevekCZ/tap
-  brew install afm-cli
-fi
-
-# When installed via Homebrew, afm-cli is already a formula dependency, so
-# the missing-binary check above doesn't apply — the user has either installed
-# it alongside obsidian-lazy-commit or it is already on PATH. Still warn.
-if [ "$BREW_INSTALL" -eq 1 ] && ! command -v afm-cli &>/dev/null; then
-  err "afm-cli is not on PATH. Install it with: brew install creevekcz/tap/afm-cli"
-  exit 1
+# afm-cli is optional: it generates natural-language commit messages via
+# on-device Apple Intelligence. Without it, commit.sh falls back to a
+# timestamp subject, so this is a warning, not a hard requirement.
+if ! command -v afm-cli &>/dev/null; then
+  log "afm-cli not found — commit messages will fall back to 'auto-sync: <timestamp>'."
+  log "Install later with: brew install creevekcz/tap/afm-cli"
 fi
 
 # The commit script lives next to this file in a git-clone install, or in
